@@ -1,80 +1,101 @@
-import json_repair
-
-import aiofiles
+import sqlite3
 import asyncio
 import logging
 import random
-import json
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters.command import Command
 
-bot = Bot(token='8814729828:AAEIDJwTUEX8pOS_jevPhIM9TbURZLayzss') # токен давным давно ревокнут можешь не пытаться чето сделать хех ххе
+bot = Bot(token='8814729828:AAEIDJwTUEX8pOS_jevPhIM9TbURZLayzss')
 dp = Dispatcher()
+
+DB_PATH = 'bot.db'
+FREE_PREFIX = '7'
+ANON_PREFIX = '888'
 
 channels = [('BASALTGRAM News', 'http://t.me/Basaltgram')]
 
-async def get_numbers() -> dict:
-    async with aiofiles.open('numbers.json', 'r') as file:
-        return json_repair.loads(await file.read())
 
-async def write_numbers(numbers: dict) -> None:
-    # топовый способ хранения номеров 2026
-    async with aiofiles.open('numbers.json', 'w') as file:
-        await file.write(json.dumps(numbers))
-    
-async def has_free_number(uid: str | int) -> bool:
-    numbers = await get_numbers()
-    for number in numbers[str(uid)]:
-        if number.startswith('7'):
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            uid TEXT PRIMARY KEY,
+            numbers TEXT DEFAULT '[]'
+        )''')
+        conn.commit()
+
+
+def get_numbers(uid: int) -> list:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute('SELECT numbers FROM users WHERE uid = ?', (str(uid),)).fetchone()
+        if row:
+            import json
+            return json.loads(row[0])
+        return []
+
+
+def save_numbers(uid: int, numbers: list):
+    import json
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('INSERT OR REPLACE INTO users (uid, numbers) VALUES (?, ?)',
+                      (str(uid), json.dumps(numbers)))
+        conn.commit()
+
+
+def create_user(uid: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('INSERT OR IGNORE INTO users (uid, numbers) VALUES (?, ?)',
+                      (str(uid), '[]'))
+        conn.commit()
+
+
+def has_free_number(uid: int) -> bool:
+    for number in get_numbers(uid):
+        if number.startswith(FREE_PREFIX):
             return True
-            
     return False
 
-async def create_user(uid: str | int) -> None:
-    numbers = await get_numbers()
-    if uid in numbers:
-        return
-    
-    numbers.update({str(uid): numbers.get(str(uid)) or []})
-    await write_numbers(numbers)
 
-async def is_number_exists(number: str) -> bool:
-    numbers = await get_numbers()
-    return f"{number}'" in str(numbers)
-    
-async def add_free_number(uid: str | int) -> str:
-    numbers = await get_numbers()
-    phone = f'7{random.randint(111_111_1111, 999_999_9999)}'
-    if await is_number_exists(phone):
-        return await add_free_number(uid)
-    
-    numbers[str(uid)].append(phone)
+def is_number_exists(phone: str) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute('SELECT uid FROM users').fetchall()
+        import json
+        for (uid,) in row:
+            numbers = json.loads(conn.execute('SELECT numbers FROM users WHERE uid = ?', (uid,)).fetchone()[0])
+            if phone in numbers:
+                return True
+        return False
 
-    await write_numbers(numbers)
+
+def add_free_number(uid: int) -> str:
+    numbers = get_numbers(uid)
+    phone = f'{FREE_PREFIX}{random.randint(111_111_1111, 999_999_9999)}'
+    if is_number_exists(phone):
+        return add_free_number(uid)
+    numbers.append(phone)
+    save_numbers(uid, numbers)
     return phone
 
-async def add_anon_number(uid: str | int) -> str:
-    numbers = await get_numbers()
-    phone = f'888{random.randint(1111_1111, 9999_9999)}'
-    if await is_number_exists(phone):
-        return await add_anon_number(uid)
-    
-    numbers[str(uid)].append(phone)
 
-    await write_numbers(numbers)
+def add_anon_number(uid: int) -> str:
+    numbers = get_numbers(uid)
+    phone = f'{ANON_PREFIX}{random.randint(1111_1111, 9999_9999)}'
+    if is_number_exists(phone):
+        return add_anon_number(uid)
+    numbers.append(phone)
+    save_numbers(uid, numbers)
     return phone
 
-async def add_short_anon(uid: str | int) -> str:
-    numbers = await get_numbers()
-    phone = f'888{random.randint(1111, 9999)}'
-    if await is_number_exists(phone):
-        return await add_short_anon(uid)
 
-    numbers[str(uid)].append(phone)
-
-    await write_numbers(numbers)
+def add_short_anon(uid: int) -> str:
+    numbers = get_numbers(uid)
+    phone = f'{ANON_PREFIX}{random.randint(1111, 9999)}'
+    if is_number_exists(phone):
+        return add_short_anon(uid)
+    numbers.append(phone)
+    save_numbers(uid, numbers)
     return phone
+
 
 @dp.message(Command('start'))
 async def start(message: types.Message) -> None:
@@ -100,90 +121,91 @@ async def start(message: types.Message) -> None:
 
     await message.answer('<b>👋 Привет! Это бот для авторизации в BASALTGRAM.</b>\n\nℹ️ Здесь ты можешь приобрести анонимный номер за звезды, либо взять бесплатный номер. Все коды, отправленные в BASALTGRAM на приобретенные тобой номера, будут отображаться здесь.\n\n<b>🕹 Используй кнопки ниже для управления ботом.</b>', parse_mode='HTML', reply_markup=keyboard)
 
+
 @dp.callback_query(F.data == 'freenum')
 async def freenum(query: types.CallbackQuery) -> None:
-    await create_user(query.from_user.id)
+    uid = query.from_user.id
+    create_user(uid)
 
-    if await has_free_number(query.from_user.id):
+    if has_free_number(uid):
         await query.message.answer('<b>❌ У вас уже есть бесплатный номер!</b>', parse_mode='HTML')
         await query.answer()
         return
-    
-    number = await add_free_number(query.from_user.id)
-    await query.message.answer(f'<b>✅ Успешно добавлен бесплатный номер!\n\n📱 Номер:</b><pre>+{number}</pre>', parse_mode='HTML')
+
+    number = add_free_number(uid)
+    await query.message.answer(f'<b>✅ Успешно добавлен бесплатный номер!\n\n📱 Номер:</b>\n<pre>+{number}</pre>', parse_mode='HTML')
     await query.answer()
+
 
 @dp.callback_query(F.data == 'anon')
 async def anon(query: types.CallbackQuery) -> None:
     await query.message.answer_invoice(
-        title='📱 Анонимный номер\n', 
+        title='📱 Анонимный номер\n',
         description='ℹ️ Анонимный номер для входа в BASALTGRAM. Пример: +888 1234 5678',
-        prices=[
-            types.LabeledPrice(label='Оплата', amount=100)
-        ],
+        prices=[types.LabeledPrice(label='Оплата', amount=100)],
         payload='anon',
         currency='XTR'
     )
-
     await query.answer()
+
 
 @dp.callback_query(F.data == 'shortanon')
 async def shortanon(query: types.CallbackQuery) -> None:
     await query.message.answer_invoice(
-        title='📱 Короткий анонимный номер', 
+        title='📱 Короткий анонимный номер',
         description='ℹ️ Короткий анонимный номер для входа в BASALTGRAM. Пример: +888 1234',
-        prices=[
-            types.LabeledPrice(label='Оплата', amount=200)
-        ],
+        prices=[types.LabeledPrice(label='Оплата', amount=200)],
         payload='shortanon',
         currency='XTR'
     )
-
     await query.answer()
+
 
 @dp.callback_query(F.data == 'mynums')
 async def mynums(query: types.CallbackQuery) -> None:
-    numbers = await get_numbers()
-    if not numbers.get(str(query.from_user.id)):
+    numbers = get_numbers(query.from_user.id)
+    if not numbers:
         await query.message.answer('<b>❌ У вас нет номеров.</b>', parse_mode='HTML')
         await query.answer()
         return
-    
-    numbers_list = []
 
-    for i, number in enumerate(numbers[str(query.from_user.id)]):
+    numbers_list = []
+    for i, number in enumerate(numbers):
         numbers_list.append(f'{i + 1}. <code>+{number}</code>')
-    
-    await query.message.answer(f'<b>📱 Список ваших номеров</b>\n\n{"\n".join(numbers_list)}', parse_mode='HTML')
+
+    await query.message.answer(f'<b>📱 Список ваших номеров</b>\n\n' + '\n'.join(numbers_list), parse_mode='HTML')
     await query.answer()
+
 
 @dp.pre_checkout_query(F.invoice_payload == 'anon')
 async def anon_payment(query: types.PreCheckoutQuery) -> None:
     await query.answer(ok=True)
 
+
 @dp.pre_checkout_query(F.invoice_payload == 'shortanon')
 async def shortanon_payment(query: types.PreCheckoutQuery) -> None:
     await query.answer(ok=True)
 
+
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: types.Message) -> None:
     payload = message.successful_payment.invoice_payload
-    await create_user(message.from_user.id)
+    uid = message.from_user.id
+    create_user(uid)
 
     if payload == 'anon':
-        number = await add_anon_number(uid)
-        await message.answer(f'<b>✅ Успешно добавлен анонимный номер!\n\n📱 Номер:</b><pre>+{number}</pre>', parse_mode='HTML')
+        number = add_anon_number(uid)
+        await message.answer(f'<b>✅ Успешно добавлен анонимный номер!\n\n📱 Номер:</b>\n<pre>+{number}</pre>', parse_mode='HTML')
     elif payload == 'shortanon':
-        number = await add_short_anon(uid)
-        await message.answer(f'<b>✅ Успешно добавлен короткий анонимный номер!\n\n📱 Номер:</b><pre>+{number}</pre>', parse_mode='HTML')
+        number = add_short_anon(uid)
+        await message.answer(f'<b>✅ Успешно добавлен короткий анонимный номер!\n\n📱 Номер:</b>\n<pre>+{number}</pre>', parse_mode='HTML')
 
-# а еще в этом сурсе всратая оплата звездами и типы с экстера плагином могут бесплатно покупать кучу анонок
-# или я успел пофиксить эту хуйню ну не знаю крч
-# думайте
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    init_db()
     await dp.start_polling(bot)
+
 
 if __name__ == '__main__':
     asyncio.run(main())
