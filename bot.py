@@ -149,13 +149,13 @@ class Database:
         try:
             with open(path, 'r', encoding='utf-8') as file:
                 raw = file.read()
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, UnicodeDecodeError):
             return None
         if not raw.strip():
             return None
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             if json_repair is None:
                 return None
             try:
@@ -385,7 +385,7 @@ def safe_callback_handler(handler):
 
 
 @dp.errors()
-async def on_bot_error(event: types.ErrorEvent) -> None:
+async def on_bot_error(event) -> None:
     exc = event.exception
     tb = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     logging.error('Ошибка при обработке update:\n%s', tb)
@@ -672,14 +672,11 @@ async def forward_to_admin(message: types.Message) -> None:
 
 
 async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('bot.log', encoding='utf-8'),
-        ],
-    )
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    try:
+        logging.getLogger().addHandler(logging.FileHandler('bot.log', encoding='utf-8'))
+    except OSError:
+        logging.warning('Не удалось открыть bot.log, логи только в консоль')
 
     lock = acquire_lock(LOCK_FILE)
     if lock is None:
@@ -695,4 +692,10 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print('\nБОТ УПАЛ ПРИ ЗАПУСКЕ. Ошибка ниже (скопируй её полностью в чат):\n')
+        traceback.print_exc()
