@@ -18,10 +18,23 @@ channels = [('BASALTGRAM News', 'http://t.me/Basaltgram')]
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
+        # Создаём таблицу, если базы ещё нет.
         conn.execute('''CREATE TABLE IF NOT EXISTS users (
             uid TEXT PRIMARY KEY,
             numbers TEXT DEFAULT '[]'
         )''')
+
+        # Если bot.db уже существовала со старой схемой без `numbers`,
+        # добавляем недостающий столбец, не удаляя существующих пользователей.
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+
+        if 'numbers' not in columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN numbers TEXT DEFAULT '[]'"
+            )
+
         conn.commit()
 
 
